@@ -1,2 +1,5 @@
 .env
-refreseh_history.json
+refresh_history.json
+__pycache__/
+*.py[cod]
+*$py.class
