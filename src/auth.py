@@ -47,7 +47,3 @@ def acquire_token() -> str:
         raise RuntimeError(f"Falha ao obter token: {err}")
 
     return access_token
-
-
-token = acquire_token()
-print("Bearer: ", token)
