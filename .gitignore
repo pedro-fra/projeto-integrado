@@ -3,3 +3,4 @@ refresh_history.json
 __pycache__/
 *.py[cod]
 *$py.class
+pbiRefreshHistory_logs.txt

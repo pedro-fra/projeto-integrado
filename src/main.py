@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-# src/main.py
-
 import asyncio
 import argparse
 import json
+import sys
 from typing import List, Dict, Any
 
 from .workspaces import list_workspaces
@@ -12,6 +11,7 @@ from .refresh import list_dataset_refresh_history
 from .dataflows import list_dataflows, list_dataflow_transactions
 from .parser import parse_refresh_entry, parse_transaction_entry
 from .transform import transform_entries
+from .logger import setup_logger
 
 async def fetch_dataset_entries(
     ws: Dict[str, Any],
@@ -20,7 +20,7 @@ async def fetch_dataset_entries(
 ) -> List[Dict[str, Any]]:
     async with sem:
         history = await list_dataset_refresh_history(ws['id'], ds['id'])
-    entries = []
+    entries: List[Dict[str, Any]] = []
     for entry in history:
         parsed = parse_refresh_entry(entry)
         parsed.update({
@@ -38,7 +38,7 @@ async def fetch_dataflow_entries(
 ) -> List[Dict[str, Any]]:
     async with sem:
         txs = await list_dataflow_transactions(ws['id'], df['objectId'])
-    entries = []
+    entries: List[Dict[str, Any]] = []
     for entry in txs:
         parsed = parse_transaction_entry(entry)
         parsed.update({
@@ -53,29 +53,25 @@ async def gather_all_refreshes(
     max_concurrency: int
 ) -> List[Dict[str, Any]]:
     """
-    Dispara todas as coletas de datasets e dataflows como tarefas,
-    usando um Semaphore para limitar a concorrência.
+    Dispara as coletas de datasets e dataflows de todos os workspaces,
+    limitando o número de requisições simultâneas.
     """
     sem = asyncio.Semaphore(max_concurrency)
-    result_tasks: List[asyncio.Task] = []
-
+    tasks: List[asyncio.Task] = []
     workspaces = await list_workspaces()
+
     for ws in workspaces:
         # datasets
         ds_list = await list_datasets(ws['id'])
         for ds in ds_list:
-            result_tasks.append(
-                asyncio.create_task(fetch_dataset_entries(ws, ds, sem))
-            )
+            tasks.append(asyncio.create_task(fetch_dataset_entries(ws, ds, sem)))
         # dataflows
         df_list = await list_dataflows(ws['id'])
         for df in df_list:
-            result_tasks.append(
-                asyncio.create_task(fetch_dataflow_entries(ws, df, sem))
-            )
+            tasks.append(asyncio.create_task(fetch_dataflow_entries(ws, df, sem)))
 
-    # aguarda todas as tarefas e achata a lista de listas em lista única
-    results = await asyncio.gather(*result_tasks, return_exceptions=False)
+    results = await asyncio.gather(*tasks)
+    # achata a lista de listas para uma única lista de registros
     return [item for sublist in results for item in sublist]
 
 async def main():
@@ -100,17 +96,27 @@ async def main():
     )
     args = parser.parse_args()
 
-    # coletas concorrentes
-    raw_entries = await gather_all_refreshes(args.max_concurrency)
+    logger = setup_logger()
 
-    # transformação final
-    transformed = transform_entries(raw_entries, args.timezone)
+    try:
+        # 1) coleta bruta
+        raw_entries = await gather_all_refreshes(args.max_concurrency)
+        # 2) transforma
+        transformed = transform_entries(raw_entries, args.timezone)
+        # 3) grava JSON
+        with open(args.output, "w", encoding="utf-8") as f:
+            json.dump(transformed, f, ensure_ascii=False, indent=2)
 
-    # grava saída
-    with open(args.output, "w", encoding="utf-8") as f:
-        json.dump(transformed, f, ensure_ascii=False, indent=2)
+        msg = f"{len(transformed)} registros transformados e salvos em {args.output}"
+        print(msg)
+        logger.info(msg)
+        sys.exit(0)
 
-    print(f"{len(transformed)} registros transformados e salvos em {args.output}")
+    except Exception as e:
+        err_msg = f"Falha ProcessingError: {e}"
+        print(err_msg, file=sys.stderr)
+        logger.error(err_msg)
+        sys.exit(1)
 
 if __name__ == "__main__":
     asyncio.run(main())
